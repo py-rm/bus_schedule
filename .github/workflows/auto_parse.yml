@@ -4,9 +4,9 @@ permissions: write-all
 
 on:
   schedule:
-    # Запуск 2 раза в день: в 04:00 и 16:00 по UTC (в Оренбурге это 09:00 и 21:00)
+    # Запуск в 04:00 и 16:00 по UTC (в Оренбурге это 09:00 и 21:00)
     - cron: '0 4,16 * * *'
-  workflow_dispatch: # Позволит запускать парсер вручную кнопкой
+  workflow_dispatch: # Кнопка ручного запуска
 
 jobs:
   build:
@@ -30,9 +30,18 @@ jobs:
       run: python parser.py
 
     - name: Commit and Push changes if schedule.json updated
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
         git add schedule.json
-        git diff-index --quiet HEAD || git commit -m "Auto-update schedule.json"
-        git push
+        
+        # Проверяем, изменился ли файл, чтобы не делать пустых коммитов
+        if ! git diff --quiet schedule.json; then
+          git commit -m "Auto-update schedule.json"
+          # Пушим напрямую с использованием токена авторизации
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@://github.com{{ github.repository }}.git HEAD:main
+        else
+          echo "Изменений в расписании нет, пуш не требуется."
+        fi
