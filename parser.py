@@ -3,21 +3,34 @@ import requests
 import time
 import hashlib
 import re
+import sys
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://orenburg.ru"
 MAIN_URL = f"{BASE_URL}/activity/16226/"
 
+# Улучшенные заголовки для маскировки под реальный домашний браузер
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1"
 }
 
 print("Шаг 1: Подключаемся к главной странице садоводческих маршрутов...")
-response = requests.get(MAIN_URL, headers=HEADERS)
+
+# Создаем сессию, чтобы сайт думал, что мы обычный пользователь с сохраненными куками
+session = requests.Session()
+response = session.get(MAIN_URL, headers=HEADERS, timeout=15)
 
 if response.status_code != 200:
     print(f"Ошибка доступа к главной странице: {response.status_code}")
-    exit()
+    if response.status_code == 403:
+        print("Критическая ошибка: Сайт заблокировал сервер GitHub (403 Forbidden).")
+    # Принудительно завершаем скрипт с ошибкой, чтобы GitHub Actions стал красным
+    sys.exit(1)
 
 soup = BeautifulSoup(response.text, "html.parser")
 routes_table = soup.find("table", class_="noline")
@@ -52,12 +65,11 @@ if routes_table:
                 }
 else:
     print("Ошибка: Таблица маршрутов не найдена.")
-    exit()
+    sys.exit(1)
 
 print(f"\n[УСПЕХ] Сбор ссылок завершен. Найдено уникальных автобусов: {len(bus_schedule)}")
-print("\nШаг 2: Запускаем СТРУКТУРНЫЙ обход страниц (без привязки к названиям остановок)...")
+print("\nШаг 2: Запускаем СТРУКТУРНЫЙ обход страниц...")
 
-# Маркеры для определения сложного расписания (будни/выходные)
 WORKDAYS_MARKERS = ["рабочие дни", "будни", "будние дни"]
 WEEKENDS_MARKERS = ["выходные дни", "выходные"]
 
@@ -65,16 +77,14 @@ for idx, (bus_no, bus_info) in enumerate(bus_schedule.items(), 1):
     print(f"[{idx}/{len(bus_schedule)}] Скачиваем расписание для автобуса № {bus_no}...")
     
     try:
-        sub_res = requests.get(bus_info["url"], headers=HEADERS)
+        sub_res = session.get(bus_info["url"], headers=HEADERS, timeout=15)
         if sub_res.status_code == 200:
             sub_soup = BeautifulSoup(sub_res.text, "html.parser")
             
-            # Извлекаем красивое название из H1
             h1_tag = sub_soup.find("h1")
             if h1_tag:
                 bus_schedule[bus_no]["route_name"] = " ".join(h1_tag.get_text().split()).strip()
 
-            # Ищем текстовое примечание (для №86 и подобных)
             all_p_elements = sub_soup.find_all("p")
             for p in all_p_elements:
                 p_text = p.get_text().strip()
@@ -82,7 +92,6 @@ for idx, (bus_no, bus_info) in enumerate(bus_schedule.items(), 1):
                     bus_schedule[bus_no]["days_info_raw"] = " ".join(p_text.split())
                     break
 
-            # Сбор информации о перевозчике
             all_text_elements = sub_soup.find_all(["p", "div", "b", "strong"])
             for elem in all_text_elements:
                 full_text = elem.get_text().strip()
@@ -97,20 +106,15 @@ for idx, (bus_no, bus_info) in enumerate(bus_schedule.items(), 1):
                         bus_schedule[bus_no]["carrier_phones"] = list(set([p.strip() for p in phone_matches]))
                     break
 
-            # --- СТРУКТУРНЫЙ ПАРСИНГ ТАБЛИЦ ПО ИХ ПОРЯДКУ ---
             page_text_lower = sub_soup.get_text().lower()
-            # Проверяем, есть ли разделение по дням на этой странице
             has_split_by_days = any(m in page_text_lower for m in WORKDAYS_MARKERS) and any(m in page_text_lower for m in WEEKENDS_MARKERS)
 
-            # Находим блок основного контента, где лежат таблицы расписания
             detail_text_div = sub_soup.find("div", class_="detail_text")
             if not detail_text_div:
                 detail_text_div = sub_soup
 
-            # Находим ВСЕ таблицы внутри контента строго по порядку их появления в HTML
             tables = detail_text_div.find_all("table")
             
-            # Функция для извлечения времени из таблицы
             def extract_times_from_table(table_element):
                 times = []
                 cells = table_element.find_all("td")
@@ -125,20 +129,16 @@ for idx, (bus_no, bus_info) in enumerate(bus_schedule.items(), 1):
                         times.append(f"{hours}:{minutes}")
                 return sorted(list(set(times)))
 
-            # Логика распределения таблиц по индексам (порядку)
             if has_split_by_days and len(tables) >= 4:
-                # Если на странице 4 таблицы (как у 91 и 195):
                 bus_schedule[bus_no]["workdays"]["to_gardens"] = extract_times_from_table(tables[0])
                 bus_schedule[bus_no]["workdays"]["from_gardens"] = extract_times_from_table(tables[1])
                 bus_schedule[bus_no]["weekends"]["to_gardens"] = extract_times_from_table(tables[2])
                 bus_schedule[bus_no]["weekends"]["from_gardens"] = extract_times_from_table(tables[3])
                 status_msg = "Сложное (Будни/Вых)"
             elif len(tables) >= 2:
-                # Если на странице всего 2 таблицы (как у 188 и большинства других):
                 common_to = extract_times_from_table(tables[0])
                 common_from = extract_times_from_table(tables[1])
                 
-                # Дублируем график и в будни, и в выходные
                 bus_schedule[bus_no]["workdays"]["to_gardens"] = common_to
                 bus_schedule[bus_no]["workdays"]["from_gardens"] = common_from
                 bus_schedule[bus_no]["weekends"]["to_gardens"] = common_to
@@ -147,7 +147,6 @@ for idx, (bus_no, bus_info) in enumerate(bus_schedule.items(), 1):
             else:
                 status_msg = "Ошибка: недостаточно таблиц на странице"
 
-            # Считаем MD5-хэш
             all_times = (bus_schedule[bus_no]["workdays"]["to_gardens"] + 
                          bus_schedule[bus_no]["workdays"]["from_gardens"] +
                          bus_schedule[bus_no]["weekends"]["to_gardens"] + 
@@ -155,14 +154,13 @@ for idx, (bus_no, bus_info) in enumerate(bus_schedule.items(), 1):
             bus_schedule[bus_no]["md5_hash"] = hashlib.md5("".join(all_times).encode('utf-8')).hexdigest()
             
             print(f"    -> Тип страницы: {status_msg}. Собрано ТУДА/ОБРАТНО.")
-            
         else:
             print(f"    Ошибка загрузки страницы автобуса {bus_no}: Статус {sub_res.status_code}")
             
     except Exception as e:
         print(f"    Технический сбой на маршруте {bus_no}: {e}")
         
-    time.sleep(0.5)
+    time.sleep(1.0) # Немного увеличим паузу, чтобы сайт не сердился
 
 final_data = {
     "ads_config": {
