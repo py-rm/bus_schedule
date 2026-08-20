@@ -1,5 +1,7 @@
 name: Auto Update Bus Schedule
 
+permissions: write-all
+
 on:
   schedule:
     # Запуск 2 раза в день: в 04:00 и 16:00 по UTC (в Оренбурге это 09:00 и 21:00)
