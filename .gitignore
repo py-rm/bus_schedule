@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Собранные JSON (генерируются парсерами при запуске)
+dacha_schedule.json
+dacha_news.json
+
+# Сборка .exe (PyInstaller)
+build/
+dist/
+*.spec
+
+# IDE / ОС
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
